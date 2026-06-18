@@ -17,6 +17,8 @@ import type {
 
 import { OpenRouterProvider } from './providers/openrouter';
 import { OllamaProvider } from './providers/ollama';
+import { emitUsageRecorded } from './cost-tracker.js';
+import { getRuntimeConfig } from './config.js';
 
 /**
  * Create a provider instance from config
@@ -143,6 +145,7 @@ export class LlmRouter {
                 console.log(`[ai-router] Success: ${response.model} (${response.latencyMs}ms)`);
             }
 
+            await this.maybeEmitUsage(request, response);
             return response;
         } catch (error) {
             if (this.config.logging) {
@@ -221,6 +224,33 @@ export class LlmRouter {
         }
 
         return results as Record<ProviderType, string[]>;
+    }
+
+    /**
+     * Fire-and-forget emission of standardized cost + token usage.
+     * Pulls service/tenant/user/trace from request.metadata when present,
+     * otherwise from runtime config.
+     */
+    private async maybeEmitUsage(request: LlmRequest, response: LlmResponse): Promise<void> {
+        try {
+            const cfg = getRuntimeConfig();
+            const meta = (request.metadata ?? {}) as Record<string, unknown>;
+            await emitUsageRecorded({
+                service: (meta.service as string) || cfg.service,
+                provider: response.provider,
+                model: response.model,
+                prompt_tokens: response.usage?.promptTokens ?? 0,
+                completion_tokens: response.usage?.completionTokens ?? 0,
+                latency_ms: response.latencyMs,
+                tenant_id: (meta.tenantId as string) || cfg.defaultTenantId,
+                user_id: (meta.userId as string) || cfg.defaultUserId,
+                task_type: request.taskType,
+                trace_id: (meta.traceId as string) || cfg.defaultTraceId,
+                metadata: meta,
+            }, cfg.defaultTraceId);
+        } catch {
+            // Never break the call path on cost-tracking failure.
+        }
     }
 }
 

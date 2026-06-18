@@ -1,52 +1,59 @@
 {
-    "name": "@dooz/ai-router",
-    "version": "1.0.0",
-    "description": "Multi-provider LLM router with smart routing and fallback support",
-    "type": "module",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
-    "exports": {
-        ".": {
-            "bun": "./src/index.ts",
-            "import": "./dist/index.js",
-            "types": "./dist/index.d.ts"
-        }
-    },
-    "files": [
-        "dist",
-        "src"
-    ],
-    "scripts": {
-        "dev": "bun run --watch src/index.ts",
-        "build": "bun build src/index.ts --outdir dist --target node && bun run build:types",
-        "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
-        "test": "bun test",
-        "prepublishOnly": "bun run build"
-    },
-    "dependencies": {
-        "hono": "^4.11.4",
-        "zod": "^3.23.0"
-    },
-    "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5.6.0"
-    },
-    "keywords": [
-        "llm",
-        "openrouter",
-        "ollama",
-        "ai",
-        "router",
-        "dooz"
-    ],
-    "author": "DoozieSoft",
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/DoozHub/dooz-ai-router.git"
-    },
-    "publishConfig": {
-        "registry": "https://registry.npmjs.org",
-        "access": "public"
+  "name": "@dooz/ai-router",
+  "version": "1.0.0",
+  "description": "Multi-provider LLM router with smart routing and fallback support",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+    "test": "vitest run",
+    "prepublishOnly": "bun run build",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "hono": "^4.11.4",
+    "zod": "^3.23.0",
+    "nanoid": "^3.3.7",
+    "@doozhub/sdk-bridge": "file:../lib-sdk-bridge"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.7"
+  },
+  "keywords": [
+    "llm",
+    "openrouter",
+    "ollama",
+    "ai",
+    "router",
+    "dooz"
+  ],
+  "author": "DoozieSoft",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DoozHub/dooz-ai-router.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "pg": "^8.11.5"
+  }
 }

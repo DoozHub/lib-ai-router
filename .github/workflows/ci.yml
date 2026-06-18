@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'dooz-ai-router/**'
+      - '.github/workflows/dooz-ai-router-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'dooz-ai-router/**'
+
+jobs:
+  ci:
+    uses: ./.github/workflows/templates/bun-ci.yml
+    with:
+      working-directory: lib-ai-router
+      run-tests: true
+      test-command: 'npx vitest run'

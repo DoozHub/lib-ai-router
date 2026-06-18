@@ -49,5 +49,14 @@ export { configStore, type TaskRoute, type RouterConfig as TaskRouterConfig, typ
 // Client SDK
 export { AiRouterClient, type ProviderInfo, type ModelsInfo, type CompletionRequest, type CompletionResponse, type RouteRequest } from './client';
 
+// Cost tracking (emits ai.usage.recorded to dooz-bridge for dooz-core to ingest)
+export {
+    emitUsageRecorded,
+    type UsageEventPayload,
+    type UsageContext,
+} from './cost-tracker';
+
+export { getRuntimeConfig, type AiRouterRuntimeConfig } from './config';
+
 // Rate Limiter
 export { RateLimiter, createRateLimiter, RateLimitError, type RateLimitConfig } from './rate-limiter';

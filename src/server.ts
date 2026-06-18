@@ -11,13 +11,72 @@ import { createRouterFromEnv, createRouter, LlmRouter } from './router';
 import { configStore, generateLogId, type RequestLog } from './config';
 import type { LlmRequest, ProviderType, TaskType } from './types';
 import { createRateLimiter, RateLimitError } from './rate-limiter';
+import { CompleteRequestSchema, RouteRequestSchema, ProviderTypeParamSchema } from './schemas';
+import { metrics } from './lib/metrics';
+import ragRoutes, { registerRag, clearRag } from './routes/rag';
+import { MockEmbeddings } from './embeddings/mock';
+import { InMemoryVectorStore } from './vector-store/memory';
+import { RagPipeline } from './rag/pipeline';
+import { getOpenApiSpec } from './lib/openapi';
+import { emitCompletionCompleted, emitCompletionFailed, emitRoutingDecision } from './lib/bridge';
 
 const app = new Hono();
 
-// Enable CORS
-app.use('/*', cors());
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://localhost:3333,http://localhost:5173,http://localhost:5181,http://localhost:1420')
+    .split(',')
+    .map((o: string) => o.trim())
+    .filter(Boolean);
+
+app.use('/*', cors({
+    origin: CORS_ORIGINS,
+    credentials: true,
+}));
+
+app.use('*', async (c, next) => {
+    const start = Date.now();
+    await next();
+    metrics.recordHttpRequest(c.req.method, c.req.path, c.res.status, Date.now() - start);
+});
+
+const VALID_API_KEYS = new Set(
+    (process.env.AI_ROUTER_API_KEYS || '').split(',').filter(Boolean)
+);
+const SKIP_AUTH_PATHS = new Set(['/health', '/metrics', '/openapi.json', '/api-docs']);
+
+app.use('/*', async (c, next) => {
+    if (SKIP_AUTH_PATHS.has(c.req.path)) {
+        return next();
+    }
+
+    if (VALID_API_KEYS.size === 0) {
+        if (process.env.NODE_ENV === 'production') {
+            return c.json({ success: false, error: 'Server misconfigured: no API keys set' }, 500);
+        }
+        console.warn('[ai-router] WARNING: No API keys configured. All requests allowed.');
+        return next();
+    }
+
+    const apiKey = c.req.header('X-API-Key') || c.req.query('api_key');
+    if (!apiKey || !VALID_API_KEYS.has(apiKey)) {
+        return c.json({ success: false, error: 'Invalid or missing API key' }, 401);
+    }
+
+    return next();
+});
 
 // Rate limiter instance (60 requests per minute)
+// Default RAG pipeline: MockEmbeddings + InMemoryVectorStore. Override at runtime
+// via registerRag() in module loaders or tests.
+if (!process.env.AI_ROUTER_DISABLE_DEFAULT_RAG) {
+  try {
+    const mock = new MockEmbeddings({ dimensions: Number(process.env.AI_ROUTER_EMBED_DIM ?? 64) });
+    const store = new InMemoryVectorStore();
+    registerRag({ pipeline: new RagPipeline({ embeddings: mock, store }), embeddings: mock, store });
+  } catch (e) {
+    console.warn('[ai-router] failed to register default RAG pipeline:', (e as Error).message);
+  }
+}
+
 const rateLimiter = createRateLimiter({
     maxRequests: 60,
     windowMs: 60000,
@@ -80,13 +139,45 @@ function ensureRouter(): LlmRouter {
 // HEALTH & STATUS
 // =============================================================================
 
-app.get('/health', (c) => {
+app.get('/openapi.json', (c) => {
+    return c.json(getOpenApiSpec());
+});
+
+app.get('/api-docs', (c) => {
+    const html = `<!DOCTYPE html><html><head><title>dooz-ai-router API Docs</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'})</script></body></html>`;
+    return c.html(html);
+});
+
+app.get('/health', async (c) => {
+    const checks: Record<string, { status: string; latencyMs?: number; error?: string }> = {};
+    let allHealthy = true;
+
+    try {
+        const start = Date.now();
+        const r = ensureRouter();
+        const availability = await r.checkAvailability();
+        const providersHealthy = Object.values(availability).some(Boolean);
+        checks.router = {
+            status: providersHealthy ? 'ok' : 'degraded',
+            latencyMs: Date.now() - start,
+        };
+        if (!providersHealthy) allHealthy = false;
+    } catch (e) {
+        checks.router = { status: 'down', error: String(e) };
+        allHealthy = false;
+    }
+
     return c.json({
-        status: 'ok',
+        status: allHealthy ? 'ok' : 'degraded',
         service: 'dooz-ai-router',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
-    });
+        checks,
+    }, allHealthy ? 200 : 503);
+});
+
+app.get('/metrics', (c) => {
+    return c.text(metrics.format(), 200, { 'Content-Type': 'text/plain; version=0.0.4' });
 });
 
 app.get('/status', async (c) => {
@@ -131,12 +222,16 @@ app.get('/providers', async (c) => {
 });
 
 app.get('/providers/:type/models', async (c) => {
-    const providerType = c.req.param('type') as ProviderType;
+    const providerType = c.req.param('type');
+    const parsedType = ProviderTypeParamSchema.safeParse(providerType);
+    if (!parsedType.success) {
+        return c.json({ success: false, error: `Invalid provider type: ${providerType}` }, 400);
+    }
 
     try {
         const r = ensureRouter();
         const allModels = await r.listAllModels();
-        const models = allModels[providerType] || [];
+        const models = allModels[parsedType.data] || [];
 
         // Separate free models (OpenRouter convention: ends with :free)
         const freeModels = models.filter(m => m.includes(':free'));
@@ -145,7 +240,7 @@ app.get('/providers/:type/models', async (c) => {
         return c.json({
             success: true,
             data: {
-                provider: providerType,
+                provider: parsedType.data,
                 models: paidModels,
                 free_models: freeModels,
                 total: models.length,
@@ -157,7 +252,11 @@ app.get('/providers/:type/models', async (c) => {
 });
 
 app.get('/providers/:type/status', async (c) => {
-    const providerType = c.req.param('type') as ProviderType;
+    const providerType = c.req.param('type');
+    const parsedType = ProviderTypeParamSchema.safeParse(providerType);
+    if (!parsedType.success) {
+        return c.json({ success: false, error: `Invalid provider type: ${providerType}` }, 400);
+    }
 
     try {
         const r = ensureRouter();
@@ -165,12 +264,12 @@ app.get('/providers/:type/status', async (c) => {
         const availability = await r.checkAvailability();
         const latency = Date.now() - start;
 
-        const available = availability[providerType] ?? false;
+        const available = availability[parsedType.data] ?? false;
 
         return c.json({
             success: true,
             data: {
-                provider: providerType,
+                provider: parsedType.data,
                 available,
                 latency_ms: latency,
             }
@@ -230,22 +329,23 @@ app.delete('/logs', (c) => {
 // COMPLETION ENDPOINTS
 // =============================================================================
 
+app.route('/api/v1', ragRoutes);
 app.post('/complete', async (c) => {
     const startTime = Date.now();
     const logId = generateLogId();
+    let body: typeof CompleteRequestSchema._type | undefined;
 
     try {
         const r = ensureRouter();
-        const body = await c.req.json<{
-            messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-            provider?: ProviderType;
-            model?: string;
-            task_type?: TaskType;
-            temperature?: number;
-            max_tokens?: number;
-        }>();
+        const rawBody = await c.req.json();
+        const parsed = CompleteRequestSchema.safeParse(rawBody);
 
-        // Build request
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Validation failed', details: parsed.error.issues }, 400);
+        }
+
+        body = parsed.data;
+
         const request: LlmRequest = {
             messages: body.messages,
             model: body.model,
@@ -253,8 +353,6 @@ app.post('/complete', async (c) => {
             temperature: body.temperature,
             maxTokens: body.max_tokens,
         };
-
-        // Get prompt preview for logging
         const lastUserMsg = body.messages.filter(m => m.role === 'user').pop();
         const promptPreview = lastUserMsg?.content.slice(0, 100) + (lastUserMsg && lastUserMsg.content.length > 100 ? '...' : '');
 
@@ -292,6 +390,8 @@ app.post('/complete', async (c) => {
 
         console.log(`[ai-router] ${logId} | ${response.provider}/${response.model} | ${duration}ms`);
 
+        emitCompletionCompleted(logId, response.provider, response.model, response.usage?.totalTokens || 0, duration).catch(() => {})
+
         return c.json({
             success: true,
             data: {
@@ -319,7 +419,10 @@ app.post('/complete', async (c) => {
 
         console.error(`[ai-router] ${logId} | ERROR | ${duration}ms | ${e}`);
 
-        return c.json({ success: false, error: String(e), log_id: logId }, 500);
+        const safeMessage = e instanceof Error ? e.message : 'Internal server error';
+        emitCompletionFailed(logId, body?.provider || 'unknown', body?.model || 'unknown', safeMessage).catch(() => {})
+
+        return c.json({ success: false, error: safeMessage, log_id: logId }, 500);
     }
 });
 
@@ -330,14 +433,14 @@ app.post('/route', async (c) => {
 
     try {
         const r = ensureRouter();
-        const body = await c.req.json<{
-            task_type: TaskType;
-            prompt: string;
-            system_prompt?: string;
-            model?: string;
-            temperature?: number;
-            max_tokens?: number;
-        }>();
+        const rawBody = await c.req.json();
+        const parsed = RouteRequestSchema.safeParse(rawBody);
+
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Validation failed', details: parsed.error.issues }, 400);
+        }
+
+        const body = parsed.data;
 
         // Get route config for task
         const route = configStore.getRouteForTask(body.task_type);
@@ -386,6 +489,8 @@ app.post('/route', async (c) => {
 
         console.log(`[ai-router] ${logId} | ROUTE:${body.task_type} | ${response.provider}/${response.model} | ${duration}ms`);
 
+        emitRoutingDecision(logId, body.task_type, response.provider, response.model, route ? `config:${body.task_type}` : 'default').catch(() => {})
+
         return c.json({
             success: true,
             data: {
@@ -413,7 +518,8 @@ app.post('/route', async (c) => {
 
         console.error(`[ai-router] ${logId} | ROUTE ERROR | ${duration}ms | ${e}`);
 
-        return c.json({ success: false, error: String(e), log_id: logId }, 500);
+        const safeMessage = e instanceof Error ? e.message : 'Internal server error';
+        return c.json({ success: false, error: safeMessage, log_id: logId }, 500);
     }
 });
 
