@@ -9,6 +9,7 @@
  * requested tenant before computing similarities.
  */
 
+export interface MemoryVectorStoreSnapshot { version: 1; documents: Document[]; }
 import {
   type Document,
   type SearchQuery,
@@ -75,5 +76,21 @@ export class InMemoryVectorStore implements VectorStore {
     for (const [id, d] of this.docs.entries()) {
       if (d.tenantId === filter.tenantId) this.docs.delete(id);
     }
+  }
+
+  async exportState(): Promise<MemoryVectorStoreSnapshot> {
+    return { version: 1, documents: Array.from(this.docs.values()) };
+  }
+
+  async importState(snap: MemoryVectorStoreSnapshot): Promise<{ restored: number; skipped: number }> {
+    if (!snap || snap.version !== 1) throw new Error('Unsupported memory vector store snapshot version: ' + (snap && snap.version));
+    this.docs.clear();
+    let restored = 0, skipped = 0;
+    for (const d of snap.documents || []) {
+      if (!d || !d.id) { skipped++; continue; }
+      this.docs.set(d.id, d);
+      restored++;
+    }
+    return { restored, skipped };
   }
 }

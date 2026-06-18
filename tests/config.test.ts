@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeEach } from "vitest"
 import { configStore, generateLogId } from "../src/config"
 import type { TaskType } from "../src/types"
 
