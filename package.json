@@ -25,10 +25,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "hono": "^4.11.4",
-    "zod": "^3.23.0",
+    "@doozhub/sdk-bridge": "file:../lib-sdk-bridge",
+    "hono": "^4.12.26",
     "nanoid": "^3.3.7",
-    "@doozhub/sdk-bridge": "file:../lib-sdk-bridge"
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
